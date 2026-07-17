@@ -2,8 +2,6 @@
 
 Every housing lumber, counted across every character you have. Make it sawed.
 
-![Lumber One](https://example.com/screenshot.png)
-
 ## What it does
 
 One line per lumber type, showing how much you have **across your whole account** —
@@ -40,21 +38,5 @@ logs in. Nothing to set up.
 | `/lumber chars` | list your characters and when each was last seen |
 | `/lumber forget <Name-Realm>` | drop a deleted character |
 | `/lumber help` | all of the above |
-
-## Contributing
-
-Run the tests with `luajit tests/test_lumberone.lua` — about 35 checks over the
-counting logic. `UI.lua` isn't covered by them.
-
-Build the CurseForge zip with `.\tools\build.ps1`. It runs the tests first and
-ships only the files the addon actually loads.
-
-Adding a lumber type is one entry in `Data.lua`. Adding a frame style is one entry
-in the `SKINS` table in `UI.lua` — each style works out its own frame width from the
-proportions of its art, so nothing else needs touching.
-
-`tools/key_art.ps1` rebuilds `images/keyed/` from the art in `images/`. Read its
-header before touching the art — the source images have no usable transparency and
-that script is what puts it back.
 
 MIT licensed. See LICENSE.txt.
