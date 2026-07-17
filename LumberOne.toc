@@ -1,0 +1,15 @@
+## Interface: 120007
+## Title: Lumber One
+## Notes: An account-wide tally of every housing lumber across your bags, bank and Warband bank — with goals. Make it sawed.
+## Author: Kennedy
+## Version: 1.0.0
+## License: MIT
+## IconTexture: Interface\Icons\INV_Misc_Log_01
+## Category: Professions
+## SavedVariables: LumberOneDB
+## AddonCompartmentFunc: LumberOne_OnAddonCompartmentClick
+
+Data.lua
+Core.lua
+UI.lua
+Options.lua
