@@ -112,7 +112,63 @@ local showGoals = MakeCheck(hideZero, "Show goal boxes",
 	"Turning these off narrows the window, since the goal column is what makes it wide.",
 	function(checked) ns.SetShowGoals(checked) end)
 
-local locked = MakeCheck(showGoals, "Lock the frame",
+local zoneMarker = MakeCheck(showGoals, "Mark lumber you can gather here",
+	"Plants a marker on any lumber that can be gathered in the zone you're standing in.",
+	function(checked)
+		LumberOneDB.ui.zoneMarker = checked
+		ns.Refresh()
+	end)
+
+--------------------------------------------------------------------------------
+-- Which marker
+--------------------------------------------------------------------------------
+
+local markerLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+markerLabel:SetPoint("TOPLEFT", zoneMarker, "BOTTOMLEFT", 20, -8)
+markerLabel:SetText("Marker")
+
+local markerRadios = {}
+
+local function SelectMarker(key)
+	ns.SetMarkerPreset(key)
+	for _, radio in ipairs(markerRadios) do
+		radio:SetChecked(radio.markerKey == key)
+	end
+end
+
+local markerPrevious
+for index, preset in ipairs(ns.GetMarkerPresets()) do
+	local radio = CreateFrame("CheckButton", nil, panel, "UIRadioButtonTemplate")
+	radio.markerKey = preset.key
+
+	if markerPrevious then
+		radio:SetPoint("TOPLEFT", markerPrevious, "BOTTOMLEFT", 0, -6)
+	else
+		radio:SetPoint("TOPLEFT", markerLabel, "BOTTOMLEFT", 4, -6)
+	end
+
+	-- A live swatch of the marker itself, so the choice is visible rather than
+	-- described. Nothing else on this panel can show you what you're picking.
+	local swatch = radio:CreateTexture(nil, "ARTWORK")
+	swatch:SetSize(16, 16)
+	swatch:SetPoint("LEFT", radio, "RIGHT", 6, 0)
+	ns.ApplyPresetToTexture(swatch, preset)
+
+	local name = radio:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	name:SetPoint("LEFT", swatch, "RIGHT", 8, 0)
+	name:SetText(preset.name)
+
+	local desc = radio:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+	desc:SetPoint("LEFT", name, "RIGHT", 10, 0)
+	desc:SetText(preset.desc)
+
+	radio:SetScript("OnClick", function(self) SelectMarker(self.markerKey) end)
+
+	markerRadios[index] = radio
+	markerPrevious = radio
+end
+
+local locked = MakeCheck(markerPrevious, "Lock the frame",
 	"Stops the window being dragged or resized.",
 	function(checked) LumberOneDB.ui.locked = checked end)
 
@@ -173,7 +229,15 @@ panel:SetScript("OnShow", function()
 	end
 	hideZero:SetChecked(LumberOneDB.ui.hideZero)
 	showGoals:SetChecked(ns.GetShowGoals())
+	zoneMarker:SetChecked(LumberOneDB.ui.zoneMarker)
 	locked:SetChecked(LumberOneDB.ui.locked)
+
+	-- nil means the crop was tuned in the picker into something that isn't one of
+	-- the presets, so nothing is ticked rather than a wrong one.
+	local marker = ns.GetMarkerPreset()
+	for _, radio in ipairs(markerRadios) do
+		radio:SetChecked(radio.markerKey == marker)
+	end
 
 	seeding = true
 	opacity:SetValue(ns.GetOpacity())

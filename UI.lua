@@ -47,6 +47,150 @@ end
 
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_Log_01"
 
+-- Marker shown on a lumber's icon when it can be gathered in the current zone.
+--
+-- Blizzard's waypoint-pin atlases aren't guaranteed to exist on every build, and
+-- a missing atlas draws nothing at all — which reads as the feature being broken.
+-- So rather than hardcode a name and hope, probe the candidates at runtime and
+-- use the first that actually exists, falling back to the plain indicator dot,
+-- which ships with every client.
+-- The marker uses the lumber's OWN item icon, fetched the same way the row icon
+-- is. That's deliberate: a hardcoded icon path can silently resolve to nothing
+-- (INV_Misc_Log_01 rendered as an empty square, which is what the dark plate was
+-- left showing), whereas the item icon is proven to load every time the row
+-- draws. Each lumber's icon also carries its own colour, so the markers are
+-- distinguishable at a glance.
+local MARKER_SIZE = 15
+local MARKER_PLATE = 2 -- dark edge behind the icon, for contrast on busy skins
+
+-- The minimap blip sheets. These are sprite grids, not single icons, so using
+-- one means cropping to a cell — and which cell holds which blip isn't something
+-- that can be read from the file. Hence the picker below: it draws every cell so
+-- you can click the one you want, rather than anyone guessing coordinates.
+local BLIP_FILES = {
+	"Interface\\Minimap\\ObjectIcons",
+	"Interface\\Minimap\\ObjectIconsAtlas",
+}
+local BLIP_GRIDS = { 8, 16, 32, 64 } -- the sheets' layouts aren't documented either
+
+-- Ready-made markers, found with the picker and their crops tuned by hand. The
+-- offsets aren't decoration: the sheet's icons drift off any regular grid, so
+-- these are what actually centres each one. See /lumber blip to hunt for others.
+local MARKER_PRESETS = {
+	{ key = "lumber",  name = "Lumber",         desc = "a golden log",
+	  file = 2, grid = 32, index = 494, dx = 0.15,  dy = 0.15,  pad = 0 },
+	{ key = "greendot", name = "Green dot",     desc = "plain and readable",
+	  file = 2, grid = 32, index = 783, dx = 0.25,  dy = -0.35, pad = 0 },
+	{ key = "diamond", name = "Yellow diamond", desc = "the classic map blip",
+	  file = 2, grid = 32, index = 855, dx = -0.30, dy = -0.20, pad = 0 },
+	{ key = "item",    name = "Item icon",      desc = "each lumber's own icon" },
+}
+
+local DEFAULT_MARKER = "lumber"
+
+function ns.GetMarkerPresets()
+	return MARKER_PRESETS
+end
+
+-- Deliberately not part of the saved-variable defaults table: ApplyDefaults
+-- recurses into tables, so a stored `false` ("item icons, thanks") would be
+-- turned back into a table and refilled with the shipped preset on every login.
+-- Setting it once, only when it has never been set at all, avoids that.
+function ns.EnsureMarkerDefault()
+	if LumberOneDB.ui.blip == nil then
+		ns.SetMarkerPreset(DEFAULT_MARKER)
+	end
+end
+
+-- A cell rect, plus optional fine adjustment. The sheets' icons don't sit exactly
+-- on any single grid — the spacing drifts — so a cell that's the right size can
+-- still be a few pixels off the icon it's meant to frame. dx/dy shift the crop
+-- and pad tightens it, both measured in fractions of a cell so they stay correct
+-- if the grid size changes.
+local function BlipTexCoords(blip)
+	local g = blip.grid
+	local col, row = blip.index % g, math.floor(blip.index / g)
+	local cell = 1 / g
+	local dx, dy = (blip.dx or 0) * cell, (blip.dy or 0) * cell
+	local pad = (blip.pad or 0) * cell
+
+	return col * cell + dx + pad, (col + 1) * cell + dx - pad,
+	       row * cell + dy + pad, (row + 1) * cell + dy - pad
+end
+
+function ns.GetBlip()
+	return LumberOneDB and LumberOneDB.ui.blip
+end
+
+-- Every field is written, including the zeroed tuning. Leaving any of them nil
+-- would let the saved-variable defaults fill them in on the next login, quietly
+-- applying the shipped preset's offsets to a crop you chose yourself.
+function ns.SetBlip(file, grid, index)
+	if file then
+		LumberOneDB.ui.blip = {
+			file = file, grid = grid, index = index,
+			dx = 0, dy = 0, pad = 0,
+		}
+	else
+		LumberOneDB.ui.blip = false -- false, not nil: "item icons" is a choice, and
+		                            -- nil would be refilled by the defaults
+	end
+	ns.Refresh()
+end
+
+function ns.SetMarkerPreset(key)
+	for _, preset in ipairs(MARKER_PRESETS) do
+		if preset.key == key then
+			if preset.file then
+				LumberOneDB.ui.blip = {
+					file = preset.file, grid = preset.grid, index = preset.index,
+					dx = preset.dx, dy = preset.dy, pad = preset.pad,
+				}
+			else
+				LumberOneDB.ui.blip = false
+			end
+			ns.Refresh()
+			return true
+		end
+	end
+	return false
+end
+
+-- Draws a preset onto any texture, for the swatches in the options panel. Must
+-- live below BlipTexCoords: that's a local, so a call placed above its
+-- declaration compiles to a global lookup and blows up at runtime — which is
+-- exactly what stopped the options panel registering once already.
+--
+-- The "item icon" preset has no fixed art (it varies per lumber), so it borrows
+-- the first lumber's icon as a stand-in.
+function ns.ApplyPresetToTexture(tex, preset)
+	if preset.file then
+		tex:SetTexture(BLIP_FILES[preset.file])
+		tex:SetTexCoord(BlipTexCoords(preset))
+	else
+		local first = ns.LUMBER[1]
+		tex:SetTexture((first and first.id and C_Item.GetItemIconByID(first.id)) or FALLBACK_ICON)
+		tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	end
+end
+
+-- Which preset the current crop corresponds to, or nil if it's been tuned into
+-- something of its own.
+function ns.GetMarkerPreset()
+	local blip = ns.GetBlip()
+	if not blip then return "item" end
+	for _, preset in ipairs(MARKER_PRESETS) do
+		if preset.file and preset.file == blip.file and preset.grid == blip.grid
+			and preset.index == blip.index
+			and (preset.dx or 0) == (blip.dx or 0)
+			and (preset.dy or 0) == (blip.dy or 0)
+			and (preset.pad or 0) == (blip.pad or 0) then
+			return preset.key
+		end
+	end
+	return nil -- custom
+end
+
 local function Round(v) return math.floor(v + 0.5) end
 
 --------------------------------------------------------------------------------
@@ -281,7 +425,10 @@ local function ShowRowTooltip(row)
 	else
 		for _, char in ipairs(data.chars) do
 			local r, g, b = ClassColor(char.class)
+			-- Marked, because this figure came from DataStore rather than from a
+			-- scan of our own — the header's freshness times don't describe it.
 			local label = char.name .. (char.isCurrent and " (here)" or "")
+				.. (char.fromDataStore and " |cff808080*|r" or "")
 			local detail = ("%d"):format(char.total)
 			if char.bags > 0 and char.bank > 0 then
 				detail = ("%d  |cff808080(%d bags, %d bank)|r"):format(char.total, char.bags, char.bank)
@@ -347,6 +494,17 @@ local function ShowHeaderTooltip(self)
 		GameTooltip:AddDoubleLine(" ", ("bank %s"):format(bankText), 1, 1, 1, br, bg, bb)
 	end
 
+	-- Only mentioned when it's actually doing something. Someone without DataStore
+	-- should never learn from this addon that it exists.
+	local borrowedCount = ns.GetBorrowedCount()
+	if borrowedCount > 0 then
+		GameTooltip:AddLine(" ")
+		GameTooltip:AddDoubleLine("From DataStore",
+			("%d character%s"):format(borrowedCount, borrowedCount == 1 and "" or "s"),
+			0.6, 0.8, 1, 0.8, 0.8, 0.8)
+		GameTooltip:AddLine("Marked * — these haven't been scanned here.", 0.6, 0.6, 0.6, true)
+	end
+
 	GameTooltip:AddLine(" ")
 	GameTooltip:AddLine("Bags update live. Bank and Warband numbers are from the last bank visit.", 0.6, 0.6, 0.6, true)
 	GameTooltip:AddLine(" ")
@@ -387,6 +545,25 @@ local function CreateRow(parent, index)
 	row.icon:SetSize(ICON_SIZE, ICON_SIZE)
 	row.icon:SetPoint("LEFT", ROW_MARGIN, 0)
 	row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+	-- Planted just after the lumber's name. Refresh re-anchors it to wherever that
+	-- text actually ends, since the names differ in length. It overlays rather
+	-- than taking a column of its own, so toggling it never reflows the row.
+	--
+	-- Sublevels are set explicitly rather than relying on creation order, so the
+	-- plate can't end up drawn over the icon it's meant to sit behind.
+	row.harvestPlate = row:CreateTexture(nil, "OVERLAY")
+	row.harvestPlate:SetDrawLayer("OVERLAY", 0)
+	row.harvestPlate:SetColorTexture(0, 0, 0, 0.65)
+	row.harvestPlate:SetSize(MARKER_SIZE + MARKER_PLATE * 2, MARKER_SIZE + MARKER_PLATE * 2)
+	row.harvestPlate:Hide()
+
+	row.harvest = row:CreateTexture(nil, "OVERLAY")
+	row.harvest:SetDrawLayer("OVERLAY", 2)
+	row.harvest:SetSize(MARKER_SIZE, MARKER_SIZE)
+	row.harvest:SetTexCoord(0.08, 0.92, 0.08, 0.92) -- crop the icon's own border
+	row.harvest:SetPoint("CENTER", row.harvestPlate, "CENTER")
+	row.harvest:Hide()
 
 	row.name = row:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
 	row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
@@ -703,10 +880,13 @@ function ns.ApplySkin(key)
 	ns.Refresh()
 end
 
+--@debug@
 -- Paints every border piece a flat colour, so you can see where each one actually
 -- lands independently of whether its texture loaded. A piece that shows up as a
 -- coloured bar is positioned correctly and its art is at fault; a piece that stays
 -- invisible is a layout problem. Toggled with /lumber debug.
+--
+-- This whole block is stripped from the shipped build by tools/build.ps1.
 local debugging = false
 
 function ns.ToggleArtDebug()
@@ -766,6 +946,7 @@ function ns.DescribeGeometry()
 
 	return table.concat(lines, "\n")
 end
+--@end-debug@
 
 -- Goals are account-wide and rarely changed once set, so the column is worth
 -- reclaiming. Hiding it narrows the row, which re-solves the frame width for
@@ -839,10 +1020,330 @@ end
 -- Refresh
 --------------------------------------------------------------------------------
 
+-- Forces every marker on, to prove the badge renders at all. Without it, "no
+-- marker" is ambiguous: it could mean the texture failed to load, or simply that
+-- nothing is gatherable in this zone — which is the normal case almost anywhere.
+-- Declared outside the debug block on purpose: Refresh reads it, so stripping the
+-- declaration along with the toggle would leave that read pointing at a nil
+-- global. In the shipped build it simply stays false forever.
+local forceMarkers = false
+
+--@debug@
+function ns.ToggleMarkerTest()
+	forceMarkers = not forceMarkers
+	ns.Refresh()
+	return forceMarkers
+end
+--@end-debug@
+
+function ns.GetMarkerArt()
+	local blip = ns.GetBlip()
+	if not blip then return "each lumber's own item icon" end
+
+	local tuned = ""
+	if (blip.dx or 0) ~= 0 or (blip.dy or 0) ~= 0 or (blip.pad or 0) ~= 0 then
+		tuned = (" dx=%.2f dy=%.2f pad=%.2f"):format(blip.dx or 0, blip.dy or 0, blip.pad or 0)
+	end
+
+	return ("%s cell %d of %dx%d%s"):format(
+		BLIP_FILES[blip.file]:match("[^\\]+$"), blip.index, blip.grid, blip.grid, tuned)
+end
+
+--@debug@
+-- The picker and its tuning API are development tools — the shipped build gets
+-- the presets in the options panel instead, so none of this needs to travel.
+-- BlipTexCoords and BLIP_FILES stay outside this block: the marker itself is
+-- drawn with them.
+
+-- Shifts or tightens the current crop. Steps are fractions of a cell.
+function ns.NudgeBlip(dx, dy, dpad)
+	local blip = ns.GetBlip()
+	if not blip then return false end
+	blip.dx = (blip.dx or 0) + (dx or 0)
+	blip.dy = (blip.dy or 0) + (dy or 0)
+	blip.pad = (blip.pad or 0) + (dpad or 0)
+	ns.Refresh()
+	return true
+end
+
+function ns.ResetBlipTuning()
+	local blip = ns.GetBlip()
+	if not blip then return false end
+	blip.dx, blip.dy, blip.pad = 0, 0, 0
+	ns.Refresh()
+	return true
+end
+
+--------------------------------------------------------------------------------
+-- Blip picker
+--
+-- Shows a sprite sheet as a grid of clickable cells. Which cell is the lumber
+-- blip can only be settled by looking, so this makes looking easy instead of
+-- turning it into a round of guess-and-reload.
+--------------------------------------------------------------------------------
+
+local SHEET = 380      -- how big the whole sprite sheet is drawn
+local PICK_HEADER = 126 -- title, hint and the two button rows above the sheet
+local PICK_FOOTER = 96  -- magnified preview and its labels below it
+
+local picker
+
+local function BuildPicker()
+	if picker then return picker end
+
+	picker = CreateFrame("Frame", "LumberOneBlipPicker", UIParent, "BackdropTemplate")
+	-- Height is the stacked content measured, not a round number picked by eye —
+	-- guessing it is how the first version ended up spilling over its own buttons.
+	picker:SetSize(SHEET + 40, PICK_HEADER + SHEET + PICK_FOOTER)
+	picker:SetPoint("CENTER")
+	picker:SetBackdrop({
+		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+		tile = true, tileSize = 32, edgeSize = 16,
+		insets = { left = 4, right = 4, top = 4, bottom = 4 },
+	})
+	picker:SetFrameStrata("DIALOG")
+	picker:SetMovable(true)
+	picker:EnableMouse(true)
+	picker:RegisterForDrag("LeftButton")
+	picker:SetScript("OnDragStart", picker.StartMoving)
+	picker:SetScript("OnDragStop", picker.StopMovingOrSizing)
+
+	picker.title = picker:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	picker.title:SetPoint("TOPLEFT", 14, -12)
+	picker.title:SetText("Pick a marker blip")
+
+	picker.hint = picker:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+	picker.hint:SetPoint("TOPLEFT", picker.title, "BOTTOMLEFT", 0, -4)
+	picker.hint:SetWidth(390)
+	picker.hint:SetJustifyH("LEFT")
+	picker.hint:SetText("Click the blip you want. Hover to see it magnified. "
+		.. "If the box doesn't frame one icon neatly, change the grid size.")
+
+	picker.close = CreateFrame("Button", nil, picker, "UIPanelCloseButton")
+	picker.close:SetPoint("TOPRIGHT", 2, 2)
+	picker.close:SetScript("OnClick", function() picker:Hide() end)
+
+	picker.state = { file = 1, grid = 16 }
+
+	local function MakeButton(label, width, onClick)
+		local b = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate")
+		b:SetSize(width, 20)
+		b:SetText(label)
+		b:SetScript("OnClick", onClick)
+		return b
+	end
+
+	-- Which sheet
+	picker.fileButtons = {}
+	for i, path in ipairs(BLIP_FILES) do
+		local b = MakeButton(path:match("[^\\]+$"), 130, function()
+			picker.state.file = i
+			picker:Layout()
+		end)
+		if i == 1 then
+			b:SetPoint("TOPLEFT", picker.hint, "BOTTOMLEFT", 0, -10)
+		else
+			b:SetPoint("LEFT", picker.fileButtons[i - 1], "RIGHT", 6, 0)
+		end
+		picker.fileButtons[i] = b
+	end
+
+	-- Which grid layout
+	picker.gridButtons = {}
+	for i, g in ipairs(BLIP_GRIDS) do
+		local b = MakeButton(g .. "x" .. g, 50, function()
+			picker.state.grid = g
+			picker:Layout()
+		end)
+		if i == 1 then
+			b:SetPoint("TOPLEFT", picker.fileButtons[1], "BOTTOMLEFT", 0, -6)
+		else
+			b:SetPoint("LEFT", picker.gridButtons[i - 1], "RIGHT", 6, 0)
+		end
+		picker.gridButtons[i] = b
+	end
+
+	picker.reset = MakeButton("Use item icons", 130, function()
+		ns.SetBlip(nil)
+		picker:Layout()
+	end)
+	picker.reset:SetPoint("LEFT", picker.gridButtons[#BLIP_GRIDS], "RIGHT", 6, 0)
+
+	----------------------------------------------------------------------------
+	-- The sheet, drawn whole and clicked directly.
+	--
+	-- Drawing one button per cell doesn't scale: these sheets hold hundreds of
+	-- icons, so a grid coarse enough to see is too coarse to select with, and one
+	-- fine enough to select with is unreadably small. Showing the sheet at size
+	-- and working out which cell was clicked sidesteps that entirely.
+	----------------------------------------------------------------------------
+
+	picker.sheet = CreateFrame("Button", nil, picker)
+	picker.sheet:SetSize(SHEET, SHEET)
+	picker.sheet:SetPoint("TOPLEFT", picker.gridButtons[1], "BOTTOMLEFT", 0, -8)
+
+	picker.sheet.bg = picker.sheet:CreateTexture(nil, "BACKGROUND")
+	picker.sheet.bg:SetAllPoints()
+	picker.sheet.bg:SetColorTexture(0, 0, 0, 0.85)
+
+	picker.sheet.tex = picker.sheet:CreateTexture(nil, "ARTWORK")
+	picker.sheet.tex:SetAllPoints()
+
+	-- Follows the cursor so you can see exactly what one click will take.
+	picker.hover = picker.sheet:CreateTexture(nil, "OVERLAY")
+	picker.hover:SetColorTexture(1, 0.82, 0, 0.35)
+	picker.hover:Hide()
+
+	-- Cell under the cursor, magnified, since at sheet scale a single blip is
+	-- only a few pixels across.
+	picker.zoom = picker:CreateTexture(nil, "ARTWORK")
+	picker.zoom:SetSize(64, 64)
+	picker.zoom:SetPoint("BOTTOMLEFT", 16, 16)
+
+	picker.zoomPlate = picker:CreateTexture(nil, "BACKGROUND")
+	picker.zoomPlate:SetPoint("TOPLEFT", picker.zoom, "TOPLEFT", -2, 2)
+	picker.zoomPlate:SetPoint("BOTTOMRIGHT", picker.zoom, "BOTTOMRIGHT", 2, -2)
+	picker.zoomPlate:SetColorTexture(0, 0, 0, 0.8)
+
+	picker.current = picker:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	picker.current:SetPoint("BOTTOMLEFT", picker.zoom, "BOTTOMRIGHT", 12, 22)
+	picker.current:SetJustifyH("LEFT")
+	picker.current:SetWidth(SHEET - 250) -- stops it running under the nudge buttons
+
+	picker.currentHint = picker:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+	picker.currentHint:SetPoint("TOPLEFT", picker.current, "BOTTOMLEFT", 0, -4)
+	picker.currentHint:SetJustifyH("LEFT")
+
+	-- Fine adjustment. The icons drift off the grid, so the cell that catches the
+	-- right blip often needs shifting a few pixels to centre it.
+	local STEP = 0.05 -- of a cell, per press
+	local nudges = {
+		{ "<",  function() ns.NudgeBlip(-STEP, 0, 0) end },
+		{ ">",  function() ns.NudgeBlip(STEP, 0, 0) end },
+		{ "^",  function() ns.NudgeBlip(0, -STEP, 0) end },
+		{ "v",  function() ns.NudgeBlip(0, STEP, 0) end },
+		{ "+",  function() ns.NudgeBlip(0, 0, STEP) end },  -- crop tighter
+		{ "-",  function() ns.NudgeBlip(0, 0, -STEP) end }, -- crop looser
+	}
+
+	picker.nudgeButtons = {}
+	for i, def in ipairs(nudges) do
+		local b = MakeButton(def[1], 24, function()
+			def[2]()
+			picker:Layout()
+		end)
+		if i == 1 then
+			b:SetPoint("BOTTOMRIGHT", picker, "BOTTOMRIGHT", -14 - 6 * 28, 46)
+		else
+			b:SetPoint("LEFT", picker.nudgeButtons[i - 1], "RIGHT", 4, 0)
+		end
+		picker.nudgeButtons[i] = b
+	end
+
+	picker.recentre = MakeButton("Recentre", 80, function()
+		ns.ResetBlipTuning()
+		picker:Layout()
+	end)
+	picker.recentre:SetPoint("TOPRIGHT", picker.nudgeButtons[#nudges], "BOTTOMRIGHT", 0, -4)
+
+	-- Which cell the cursor is over, or nil if it's off the sheet.
+	local function CellUnderCursor()
+		local grid = picker.state.grid
+		local sheet = picker.sheet
+		local scale = sheet:GetEffectiveScale()
+		local cx, cy = GetCursorPosition()
+		cx, cy = cx / scale, cy / scale
+
+		local left, bottom = sheet:GetLeft(), sheet:GetBottom()
+		if not (left and bottom) then return nil end
+
+		local relX = (cx - left) / sheet:GetWidth()
+		-- Texture rows run top-down while screen coordinates run bottom-up.
+		local relY = 1 - (cy - bottom) / sheet:GetHeight()
+		if relX < 0 or relX >= 1 or relY < 0 or relY >= 1 then return nil end
+
+		local col = math.floor(relX * grid)
+		local row = math.floor(relY * grid)
+		return row * grid + col, col, row
+	end
+
+	picker.sheet:SetScript("OnUpdate", function(self)
+		local index, col, row = CellUnderCursor()
+		if not index then
+			picker.hover:Hide()
+			return
+		end
+
+		local grid = picker.state.grid
+		local cellPx = SHEET / grid
+		picker.hover:ClearAllPoints()
+		picker.hover:SetSize(cellPx, cellPx)
+		picker.hover:SetPoint("TOPLEFT", self, "TOPLEFT", col * cellPx, -row * cellPx)
+		picker.hover:Show()
+
+		picker.zoom:SetTexture(BLIP_FILES[picker.state.file])
+		picker.zoom:SetTexCoord(BlipTexCoords({ grid = grid, index = index }))
+		picker.currentHint:SetText(("cell %d  (col %d, row %d)"):format(index, col, row))
+	end)
+
+	-- Put the preview back to the chosen blip, tuning included, once the cursor
+	-- leaves — otherwise it's left showing whatever was last hovered.
+	picker.sheet:SetScript("OnLeave", function()
+		picker.hover:Hide()
+		picker:Layout()
+	end)
+
+	picker.sheet:SetScript("OnClick", function()
+		local index = CellUnderCursor()
+		if index then
+			ns.SetBlip(picker.state.file, picker.state.grid, index)
+			picker:Layout()
+		end
+	end)
+
+	function picker:Layout()
+		local grid, file = self.state.grid, self.state.file
+
+		for _, b in ipairs(self.fileButtons) do b:UnlockHighlight() end
+		self.fileButtons[file]:LockHighlight()
+		for i, g in ipairs(BLIP_GRIDS) do
+			if g == grid then self.gridButtons[i]:LockHighlight()
+			else self.gridButtons[i]:UnlockHighlight() end
+		end
+
+		self.sheet.tex:SetTexture(BLIP_FILES[file])
+		self.sheet.tex:SetTexCoord(0, 1, 0, 1)
+
+		local blip = ns.GetBlip()
+		if blip then
+			self.zoom:SetTexture(BLIP_FILES[blip.file])
+			self.zoom:SetTexCoord(BlipTexCoords(blip))
+		else
+			self.zoom:SetTexture(nil)
+		end
+		self.current:SetText("Marker: " .. ns.GetMarkerArt())
+	end
+
+	return picker
+end
+
+function ns.OpenBlipPicker()
+	BuildPicker():Layout()
+	picker:Show()
+end
+--@end-debug@
+
 function ns.Refresh()
 	if not frame then return end
 
 	local visible = 0
+	local markZone = LumberOneDB.ui.zoneMarker
+
+	-- Same for every row, so work it out once rather than per lumber.
+	local blip = ns.GetBlip()
+	local blipL, blipR, blipT, blipB
+	if blip then blipL, blipR, blipT, blipB = BlipTexCoords(blip) end
 
 	for i, entry in ipairs(ns.LUMBER) do
 		local row = rows[i]
@@ -858,9 +1359,33 @@ function ns.Refresh()
 			row:Show()
 
 			row.entry = entry
-			row.icon:SetTexture((entry.id and C_Item.GetItemIconByID(entry.id)) or FALLBACK_ICON)
+			local icon = (entry.id and C_Item.GetItemIconByID(entry.id)) or FALLBACK_ICON
+			row.icon:SetTexture(icon)
+
+			if blip then
+				row.harvest:SetTexture(BLIP_FILES[blip.file])
+				row.harvest:SetTexCoord(blipL, blipR, blipT, blipB)
+			else
+				row.harvest:SetTexture(icon)
+				row.harvest:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+			end
+			-- A blip carries its own colour and shape; the plate is only there to
+			-- stop a muted item icon sinking into the skin art.
+			row.harvestPlate:SetAlpha(blip and 0 or 1)
 			row.name:SetText(entry.name:gsub(" Lumber$", ""))
 			row.count:SetText(tostring(total))
+
+			local showPin = forceMarkers or (markZone and ns.HarvestableHere(entry.key))
+			row.harvest:SetShown(showPin)
+			row.harvestPlate:SetShown(showPin)
+			if showPin then
+				-- Sit just past the end of the name. Clamped so a long name can't
+				-- push the marker into the count column.
+				local textEnd = math.min(row.name:GetStringWidth() or 0,
+					NAME_WIDTH - MARKER_SIZE - MARKER_PLATE * 2 - 2)
+				row.harvestPlate:ClearAllPoints()
+				row.harvestPlate:SetPoint("LEFT", row.name, "LEFT", textEnd + 4, 0)
+			end
 
 			if not row.goal:HasFocus() then
 				row.goal:SetText(goal > 0 and tostring(goal) or "")
