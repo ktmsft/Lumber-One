@@ -934,36 +934,6 @@ SlashCmdList.LUMBERONE = function(msg)
 		LumberOneDB.ui.zoneMarker = not LumberOneDB.ui.zoneMarker
 		ns.Refresh()
 		Print("zone marker is now " .. (LumberOneDB.ui.zoneMarker and "shown" or "hidden") .. ".")
-	--@debug@
-	-- Diagnostics. Everything between a --@debug@ / --@end-debug@ pair is stripped
-	-- by tools/build.ps1, so these exist while developing and never ship.
-	elseif cmd == "zonecheck" then
-		local _, broken = ns.GetZoneResolution()
-		local covered = 0
-		Print(("indexed %d maps — every zone in the game, from anywhere.")
-			:format(ns.GetIndexedMapCount()))
-		for _, entry in ipairs(ns.LUMBER) do
-			local ids = ns.LUMBER_MAPS[entry.key] or {}
-			if #ids > 0 then covered = covered + 1 end
-			-- Names, not just IDs: a number proves it resolved to something, a name
-			-- proves it resolved to the RIGHT something, without going there.
-			local parts = {}
-			for _, id in ipairs(ids) do
-				local info = C_Map and C_Map.GetMapInfo(id)
-				parts[#parts + 1] = ("%s (%d)"):format(info and info.name or "?", id)
-			end
-			print(("  %-12s %s"):format(entry.key,
-				#parts > 0 and table.concat(parts, ", ") or "|cffff8000none|r"))
-		end
-		print(("  %d of %d lumbers can show a marker."):format(covered, #ns.LUMBER))
-		if #broken > 0 then
-			print("  names that matched no map (harmless if the lumber resolved anyway):")
-			for _, b in ipairs(broken) do print("    " .. b) end
-		end
-	elseif cmd == "blip" then
-		ns.OpenBlipPicker()
-		Print("pick a cell for the marker. Current: " .. ns.GetMarkerArt())
-	--@end-debug@
 	elseif cmd == "learned" then
 		local learned = ns.GetLearnedZones()
 		if #learned == 0 then
@@ -978,51 +948,6 @@ SlashCmdList.LUMBERONE = function(msg)
 	elseif cmd == "forgetzones" then
 		ns.ForgetLearnedZones()
 		Print("forgot every learned zone.")
-	--@debug@
-	elseif cmd == "whereami" then
-		if not C_Map then
-			Print("the map API isn't available here.")
-			return
-		end
-		local id = C_Map.GetBestMapForUnit("player")
-		if not id then
-			Print("no map for your location (in an instance, or still loading?).")
-			return
-		end
-		Print("zone map chain — innermost first:")
-		local guard = 0
-		while id and id > 0 and guard < 30 do
-			local info = C_Map.GetMapInfo(id)
-			print(("  %d — %s"):format(id, info and info.name or "?"))
-			id = info and info.parentMapID
-			guard = guard + 1
-		end
-
-		-- The bit that explains an absent marker: nothing gatherable here is the
-		-- normal case, and without saying so it reads as the feature being broken.
-		local here = {}
-		for _, entry in ipairs(ns.LUMBER) do
-			if ns.HarvestableHere(entry.key) then here[#here + 1] = entry.name end
-		end
-		if #here > 0 then
-			print("  |cff40ff40gatherable here: " .. table.concat(here, ", ") .. "|r")
-		else
-			print("  gatherable here: nothing — no marker is expected in this zone.")
-		end
-	elseif cmd == "testmarker" then
-		local on = ns.ToggleMarkerTest()
-		Print("marker test " .. (on and ("ON — every lumber should show a pin (" .. ns.GetMarkerArt() .. ").")
-			or "off."))
-	elseif cmd == "debug" then
-		-- Bare /lumber debug just reports; "tint" is the destructive one.
-		if rest == "tint" then
-			local on = ns.ToggleArtDebug()
-			Print("art tint " .. (on and "ON — bg purple, rails green/yellow, top red, bottom blue."
-				or "off."))
-		end
-		Print("geometry:")
-		print(ns.DescribeGeometry())
-	--@end-debug@
 	elseif cmd == "skin" or cmd == "style" then
 		local names = {}
 		for _, skin in ipairs(ns.GetSkins()) do
@@ -1080,12 +1005,6 @@ SlashCmdList.LUMBERONE = function(msg)
 		print("  /lumber hidezero — toggle hiding lumber you have none of")
 		print("  /lumber goals — toggle the goal boxes")
 		print("  /lumber zone — toggle the harvestable-here marker")
-		--@debug@
-		print("  /lumber whereami — current zone, and what's gatherable in it")
-		print("  /lumber testmarker — force every marker on, to check it renders")
-		print("  /lumber zonecheck — which zone names resolved to map IDs")
-		print("  /lumber debug [tint] — frame geometry, and colour the border art")
-		--@end-debug@
 		print("  /lumber reset — recentre the frame")
 		print("  /lumber chars — list characters and when they were last scanned")
 		print("  /lumber forget <Name-Realm> — drop a deleted character's data")
