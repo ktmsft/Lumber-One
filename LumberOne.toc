@@ -3,7 +3,7 @@
 ## Notes: An account-wide tally of every housing lumber across your bags, bank and Warband bank — with goals. Make it sawed.
 ## Author: KTM (abitofmoss)
 ## Version: 1.0.2
-## License: MIT
+## X-License: All Rights Reserved
 ## IconTexture: Interface\Icons\INV_Misc_Log_01
 ## Category: Professions
 ## SavedVariables: LumberOneDB
