@@ -1,8 +1,8 @@
-## Interface: 120007
+## Interface: 120007, 120100
 ## Title: Lumber One
 ## Notes: An account-wide tally of every housing lumber across your bags, bank and Warband bank — with goals. Make it sawed.
 ## Author: KTM (abitofmoss)
-## Version: 1.0.2
+## Version: 1.0.3
 ## X-License: All Rights Reserved
 ## IconTexture: Interface\Icons\INV_Misc_Log_01
 ## Category: Professions

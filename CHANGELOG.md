@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+
+- Updated for patch 12.1. Still loads on 12.0.7.
+
 ## 1.0.2
 
 **New — it tells you where to gather.** A marker appears next to any lumber you can
