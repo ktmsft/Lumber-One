@@ -749,6 +749,11 @@ function ns.BuildUI()
 	frame.grip:SetScript("OnMouseUp", function(self)
 		self:SetScript("OnUpdate", nil)
 	end)
+	-- A hidden grip never sees its mouse-up, so without this the drag would pick up
+	-- again the next time the window shows and rescale it to follow the cursor.
+	frame.grip:SetScript("OnHide", function(self)
+		self:SetScript("OnUpdate", nil)
+	end)
 
 	frame.grip:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -978,8 +983,10 @@ function ns.GetMarkerArt()
 end
 
 
+-- Skipped while the window is closed: bag and zone events call this constantly,
+-- and nothing it does can be seen. ns.Show refreshes after showing the frame.
 function ns.Refresh()
-	if not frame then return end
+	if not frame or not frame:IsShown() then return end
 
 	local visible = 0
 	local markZone = LumberOneDB.ui.zoneMarker

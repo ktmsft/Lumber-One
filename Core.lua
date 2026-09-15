@@ -105,11 +105,23 @@ end
 -- serve cached numbers the rest of the time.
 local bankOpen = false
 
-local function ResolveEntry(info)
+-- Name matching below only ever serves an entry with no ID, and every entry in
+-- Data.lua ships with one. Without this check each scan would call GetItemInfo and
+-- lower() on every non-lumber item in the bags (and the whole bank while it's
+-- open) for a match that can't happen.
+local function AnyEntryMissingID()
+	for _, entry in ipairs(ns.LUMBER) do
+		if not entry.id then return true end
+	end
+	return false
+end
+
+local function ResolveEntry(info, canLearn)
 	if not info then return nil end
 
 	local entry = info.itemID and ns.byID[info.itemID]
 	if entry then return entry end
+	if not canLearn then return nil end
 
 	-- Fall back to matching on name, and remember the ID once we see it, so the
 	-- addon still works if an ID in Data.lua is wrong or Blizzard adds a lumber
@@ -137,11 +149,12 @@ end
 
 local function ScanGroup(ids)
 	local counts = {}
+	local canLearn = AnyEntryMissingID()
 	for _, bag in ipairs(ids) do
 		local slots = C_Container.GetContainerNumSlots(bag) or 0
 		for slot = 1, slots do
 			local info = C_Container.GetContainerItemInfo(bag, slot)
-			local entry = ResolveEntry(info)
+			local entry = ResolveEntry(info, canLearn)
 			if entry then
 				counts[entry.key] = (counts[entry.key] or 0) + (info.stackCount or 1)
 			end
@@ -192,17 +205,22 @@ end
 
 -- Widest form first: bags + bank + reagent bank + account bank. Older or changed
 -- signatures fall back, and if none work we simply never reconcile.
+--
+-- Written out call by call rather than looping over argument tables: this runs
+-- for every lumber on every bag update, and the tables were fresh garbage each time.
 local function LiveReachableCount(itemID)
-	if not (C_Item and C_Item.GetItemCount) then return nil end
+	local GetItemCount = C_Item and C_Item.GetItemCount
+	if not GetItemCount then return nil end
 
-	for _, args in ipairs({
-		{ itemID, true, false, true, true },  -- ..., includeReagentBank, includeAccountBank
-		{ itemID, true, false, true },
-		{ itemID, true },
-	}) do
-		local ok, count = pcall(C_Item.GetItemCount, unpack(args))
-		if ok and type(count) == "number" then return count end
-	end
+	-- ..., includeReagentBank, includeAccountBank
+	local ok, count = pcall(GetItemCount, itemID, true, false, true, true)
+	if ok and type(count) == "number" then return count end
+
+	ok, count = pcall(GetItemCount, itemID, true, false, true)
+	if ok and type(count) == "number" then return count end
+
+	ok, count = pcall(GetItemCount, itemID, true)
+	if ok and type(count) == "number" then return count end
 
 	return nil
 end
@@ -881,6 +899,10 @@ frame:SetScript("OnEvent", function(_, event, arg1)
 		ns.Refresh()
 
 	elseif event == "CHAT_MSG_LOOT" then
+		-- Chat payloads can arrive secret under 12.x instance restrictions, and
+		-- matching on one errors on every loot message. Nothing grows in a key or a
+		-- boss fight anyway, so skip it.
+		if issecretvalue and issecretvalue(arg1) then return end
 		LearnFromLoot(arg1 or "")
 
 	elseif TRANSFER_EVENTS[event] then
