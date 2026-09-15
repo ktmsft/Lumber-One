@@ -594,11 +594,26 @@ local function CreateRow(parent, index)
 		ns.SetGoal(row.entry.key, self:GetText())
 		self:ClearFocus()
 	end)
+	-- Escape backs out of the edit. Losing focus is what saves, and ClearFocus
+	-- causes exactly that, so the typed text is put back first and the save is
+	-- told to stand down. Putting the text back also means that if the save runs
+	-- anyway, it writes the goal that was already there.
 	row.goal:SetScript("OnEscapePressed", function(self)
+		local goal = ns.GetGoal(row.entry.key)
+		self:SetText(goal > 0 and tostring(goal) or "")
+		self.cancelled = true
 		self:ClearFocus()
 		ns.Refresh()
 	end)
+	-- Hooked rather than set, so the template still highlights the text on focus.
+	row.goal:HookScript("OnEditFocusGained", function(self)
+		self.cancelled = nil
+	end)
 	row.goal:SetScript("OnEditFocusLost", function(self)
+		if self.cancelled then
+			self.cancelled = nil
+			return
+		end
 		ns.SetGoal(row.entry.key, self:GetText())
 	end)
 

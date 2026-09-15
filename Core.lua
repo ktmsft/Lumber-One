@@ -93,7 +93,13 @@ local function BuildBagGroups()
 	table.sort(bank)
 	table.sort(warband)
 
-	return { bags = bags, bank = bank, warband = warband }
+	-- BAG_UPDATE names a single container, and this says which group it belongs to.
+	local groupOf = {}
+	for _, id in ipairs(bags) do groupOf[id] = "bags" end
+	for _, id in ipairs(bank) do groupOf[id] = "bank" end
+	for _, id in ipairs(warband) do groupOf[id] = "warband" end
+
+	return { bags = bags, bank = bank, warband = warband, groupOf = groupOf }
 end
 
 --------------------------------------------------------------------------------
@@ -104,6 +110,14 @@ end
 -- open. Everywhere else they read as zero slots, so we scan them on visit and
 -- serve cached numbers the rest of the time.
 local bankOpen = false
+
+-- Counts are kept per container, so a bag update only re-reads the containers it
+-- named rather than every slot the character owns (and the whole bank while it's
+-- open). The group totals are summed from these. Session-only: a bank container's
+-- figures are only trusted while that bank is open, and opening it rescans in full.
+local containerCounts = {} -- [bagID] = { [lumber key] = count }
+local dirtyBags = {}       -- bag IDs BAG_UPDATE named since the last scan
+local fullScanPending = true
 
 -- Name matching below only ever serves an entry with no ID, and every entry in
 -- Data.lua ships with one. Without this check each scan would call GetItemInfo and
@@ -139,6 +153,9 @@ local function ResolveEntry(info, canLearn)
 				entry.id = info.itemID
 				ns.byID[info.itemID] = entry
 				LumberOneDB.learned[entry.key] = info.itemID
+				-- Containers read before this one counted it as nothing, so the
+				-- next scan reads everything again.
+				fullScanPending = true
 				return entry
 			end
 		end
@@ -147,39 +164,76 @@ local function ResolveEntry(info, canLearn)
 	return nil
 end
 
-local function ScanGroup(ids)
+local function ScanContainer(bag, canLearn)
 	local counts = {}
-	local canLearn = AnyEntryMissingID()
+	local slots = C_Container.GetContainerNumSlots(bag) or 0
+	for slot = 1, slots do
+		local info = C_Container.GetContainerItemInfo(bag, slot)
+		local entry = ResolveEntry(info, canLearn)
+		if entry then
+			counts[entry.key] = (counts[entry.key] or 0) + (info.stackCount or 1)
+		end
+	end
+	containerCounts[bag] = counts
+end
+
+local function SumGroup(ids)
+	local total = {}
 	for _, bag in ipairs(ids) do
-		local slots = C_Container.GetContainerNumSlots(bag) or 0
-		for slot = 1, slots do
-			local info = C_Container.GetContainerItemInfo(bag, slot)
-			local entry = ResolveEntry(info, canLearn)
-			if entry then
-				counts[entry.key] = (counts[entry.key] or 0) + (info.stackCount or 1)
+		local counts = containerCounts[bag]
+		if counts then
+			for key, n in pairs(counts) do
+				total[key] = (total[key] or 0) + n
 			end
 		end
 	end
-	return counts
+	return total
 end
 
-local function ScanBags()
+-- Reads whatever changed and rebuilds the character's figures. A full read covers
+-- bags, plus bank and Warband while a bank is open; otherwise only the containers
+-- BAG_UPDATE named. Anything that asked for a refresh without naming a container
+-- gets a full read, since there's no telling what it touched.
+local function ScanInventory()
+	if not (charKey and bagGroups) then return end
 	local char = LumberOneDB.chars[charKey]
-	char.bags = ScanGroup(bagGroups.bags)
+	local canLearn = AnyEntryMissingID()
+
+	local full = fullScanPending or next(dirtyBags) == nil
+	fullScanPending = false
+
+	if full then
+		for _, bag in ipairs(bagGroups.bags) do ScanContainer(bag, canLearn) end
+		if bankOpen then
+			for _, bag in ipairs(bagGroups.bank) do ScanContainer(bag, canLearn) end
+			for _, bag in ipairs(bagGroups.warband) do ScanContainer(bag, canLearn) end
+		end
+	else
+		for bag in pairs(dirtyBags) do
+			local group = bagGroups.groupOf[bag]
+			-- A bank container read with the bank shut reports zero slots, so it is
+			-- left alone; opening the bank reads it again in full.
+			if group == "bags" or (group and bankOpen) then
+				ScanContainer(bag, canLearn)
+			end
+		end
+	end
+
+	for bag in pairs(dirtyBags) do dirtyBags[bag] = nil end
+
+	char.bags = SumGroup(bagGroups.bags)
 	char.bagsSeen = time()
-end
 
-local function ScanBank()
-	if not bankOpen then return end
-	local char = LumberOneDB.chars[charKey]
-	char.bank = ScanGroup(bagGroups.bank)
-	char.bankSeen = time()
+	if bankOpen then
+		char.bank = SumGroup(bagGroups.bank)
+		char.bankSeen = time()
 
-	-- The Warband bank is one shared inventory, so the newest scan by any
-	-- character replaces it wholesale rather than adding to it.
-	LumberOneDB.warband = ScanGroup(bagGroups.warband)
-	LumberOneDB.warbandSeen = time()
-	LumberOneDB.warbandSeenBy = charKey
+		-- The Warband bank is one shared inventory, so the newest scan by any
+		-- character replaces it wholesale rather than adding to it.
+		LumberOneDB.warband = SumGroup(bagGroups.warband)
+		LumberOneDB.warbandSeen = time()
+		LumberOneDB.warbandSeenBy = charKey
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -387,12 +441,23 @@ end
 -- The Warband figure is added once, outside the character loop, and is always our
 -- own — never DataStore's. That's what keeps it from being multiplied by the
 -- roster size.
+--
+-- Walks the same characters as EachCharacter, written out as loops because the
+-- window calls this once per row on every refresh and a callback was a fresh
+-- closure each time.
 function ns.GetTotal(key)
 	local total = LumberOneDB.warband[key] or 0
-	EachCharacter(function(_, char)
+	local chars = LumberOneDB.chars
+	for _, char in pairs(chars) do
 		total = total + ((char.bags and char.bags[key]) or 0)
 		              + ((char.bank and char.bank[key]) or 0)
-	end)
+	end
+	for ck, char in pairs(borrowed) do
+		if not chars[ck] then
+			total = total + ((char.bags and char.bags[key]) or 0)
+			              + ((char.bank and char.bank[key]) or 0)
+		end
+	end
 	return total
 end
 
@@ -693,40 +758,43 @@ function ns.ResolveZones()
 	-- places whose map tree is detached (some instances), which would silently
 	-- index a fraction of the world. So try the known cosmic/world roots too and
 	-- merge whatever they return.
-	local roots, seenRoot = {}, {}
-	for _, candidate in ipairs({ FindRootMap(), 946, 947 }) do
-		if candidate and not seenRoot[candidate] then
-			seenRoot[candidate] = true
-			roots[#roots + 1] = candidate
-		end
-	end
-
-	local zones = {}
-	for _, root in ipairs(roots) do
-		local ok, found = pcall(C_Map.GetMapChildrenInfo, root, nil, true)
-		if ok and type(found) == "table" then
-			for _, z in ipairs(found) do zones[#zones + 1] = z end
-		end
-	end
-	if #zones == 0 then return end
-
+	--
+	-- A candidate that already came back as a descendant of an earlier one is
+	-- skipped: Azeroth (947) sits under the cosmic map (946), and asking for its
+	-- whole subtree again rebuilt most of the game's maps a second time at login.
+	-- It's only queried itself when 946 didn't return it.
+	--
 	-- Every ID for a name, not just one: map names are not unique (Draenor and
 	-- Outland both have a Shadowmoon Valley, and zones often have a sibling map
 	-- of the same name). Keeping one would silently pick the wrong place, so a
 	-- name matches if the player is in ANY map that carries it.
-	local byName, seenID = {}, {}
-	for _, z in ipairs(zones) do
-		-- Merging several roots can hand back the same map twice; keep it once.
-		if z.name and z.mapID and not seenID[z.mapID] then
-			seenID[z.mapID] = true
-			local n = NormalizeZone(z.name)
-			local list = byName[n]
-			if not list then list = {}; byName[n] = list end
-			list[#list + 1] = z.mapID
+	local byName, seenID, seenRoot = {}, {}, {}
+	indexedMaps = 0
+
+	-- A plain list would stop at a nil first entry, which is exactly the case
+	-- (no map for the player) the fixed roots are there to cover.
+	local candidates = { FindRootMap(), 946, 947 }
+	for i = 1, 3 do
+		local root = candidates[i]
+		if root and not seenRoot[root] and not seenID[root] then
+			seenRoot[root] = true
+			local ok, found = pcall(C_Map.GetMapChildrenInfo, root, nil, true)
+			if ok and type(found) == "table" then
+				for _, z in ipairs(found) do
+					-- Merging several roots can hand back the same map twice; keep it once.
+					if z.name and z.mapID and not seenID[z.mapID] then
+						seenID[z.mapID] = true
+						indexedMaps = indexedMaps + 1
+						local n = NormalizeZone(z.name)
+						local list = byName[n]
+						if not list then list = {}; byName[n] = list end
+						list[#list + 1] = z.mapID
+					end
+				end
+			end
 		end
 	end
-	indexedMaps = 0
-	for _ in pairs(seenID) do indexedMaps = indexedMaps + 1 end
+	if indexedMaps == 0 then return end
 
 	for key, names in pairs(ns.FARMING_ZONES) do
 		if #(ns.LUMBER_MAPS[key] or {}) == 0 then
@@ -771,20 +839,57 @@ end
 -- Events
 --------------------------------------------------------------------------------
 
+-- Who is logged in, as "Name-Realm". Normally known at ADDON_LOADED, but the name
+-- is checked rather than trusted: a nil or secret one there used to throw on the
+-- concatenation, leaving charKey nil and every later bag scan erroring with it.
+-- Returns false when it can't be worked out yet, and is tried again at login and
+-- on each refresh until it can.
+local function Readable(v)
+	if issecretvalue and issecretvalue(v) then return nil end
+	if v == nil or v == "" then return nil end
+	return v
+end
+
+local function InitCharacter()
+	if charKey then return true end
+	if not LumberOneDB then return false end
+
+	local name, realm = UnitFullName("player")
+	name, realm = Readable(name), Readable(realm)
+	name = name or Readable(UnitName("player"))
+	realm = realm or Readable(GetRealmName())
+	if not (name and realm) then return false end
+
+	charKey = name .. "-" .. realm
+	LumberOneDB.chars[charKey] = LumberOneDB.chars[charKey] or {}
+
+	local char = LumberOneDB.chars[charKey]
+	char.bags = char.bags or {}
+	char.bank = char.bank or {}
+	char.name = name
+	char.realm = realm
+	char.class = Readable((select(2, UnitClass("player"))))
+	return true
+end
+
 local refreshPending = false
 
-local function QueueRefresh()
+local function FlushRefresh()
+	refreshPending = false
+	InitCharacter()
+	ScanInventory()
+	-- After the scans: bags must be current before the cached figures can be
+	-- checked against what the character can actually reach.
+	ReconcileLive()
+	ns.Refresh()
+end
+
+-- fullScan: the caller can't say which containers changed, so read them all.
+local function QueueRefresh(fullScan)
+	if fullScan then fullScanPending = true end
 	if refreshPending then return end
 	refreshPending = true
-	C_Timer.After(0.2, function()
-		refreshPending = false
-		ScanBags()
-		ScanBank()
-		-- After the scans: bags must be current before the cached figures can be
-		-- checked against what the character can actually reach.
-		ReconcileLive()
-		ns.Refresh()
-	end)
+	C_Timer.After(0.2, FlushRefresh)
 end
 
 local frame = CreateFrame("Frame")
@@ -792,6 +897,7 @@ local frame = CreateFrame("Frame")
 for _, event in ipairs({
 	"ADDON_LOADED",
 	"PLAYER_LOGIN",
+	"BAG_UPDATE",
 	"BAG_UPDATE_DELAYED",
 	"BANKFRAME_OPENED",
 	"BANKFRAME_CLOSED",
@@ -847,17 +953,7 @@ frame:SetScript("OnEvent", function(_, event, arg1)
 		ApplyDefaults(LumberOneDB, defaults)
 		if isDev then LumberOneDevDB = LumberOneDB end   -- persist to the dev saved variable
 
-		local name, realm = UnitFullName("player")
-		realm = realm or GetRealmName()
-		charKey = name .. "-" .. realm
-		LumberOneDB.chars[charKey] = LumberOneDB.chars[charKey] or {}
-
-		local char = LumberOneDB.chars[charKey]
-		char.bags = char.bags or {}
-		char.bank = char.bank or {}
-		char.name = name
-		char.realm = realm
-		char.class = select(2, UnitClass("player"))
+		InitCharacter()
 
 		-- Re-apply any item IDs learned by name matching in earlier sessions.
 		for key, id in pairs(LumberOneDB.learned) do
@@ -876,15 +972,25 @@ frame:SetScript("OnEvent", function(_, event, arg1)
 		ns.BuildUI()
 		ns.ResolveZones()
 		RefreshZone()
+		InitCharacter()
+		fullScanPending = true
+		ScanInventory()
 		-- After our own scan, so characters we can see for ourselves always win.
-		ScanBags()
 		RefreshBorrowed()
 		ns.Refresh()
 		if LumberOneDB.ui.shown then ns.Show() end
 
+	elseif event == "BAG_UPDATE" then
+		-- Just note which container changed. BAG_UPDATE_DELAYED follows the burst
+		-- and triggers one scan of everything noted here.
+		if arg1 then dirtyBags[arg1] = true end
+
+	elseif event == "BAG_UPDATE_DELAYED" then
+		QueueRefresh()
+
 	elseif event == "BANKFRAME_OPENED" then
 		bankOpen = true
-		QueueRefresh()
+		QueueRefresh(true)
 
 	elseif event == "BANKFRAME_CLOSED" then
 		bankOpen = false
@@ -912,7 +1018,8 @@ frame:SetScript("OnEvent", function(_, event, arg1)
 		transferOpen[family] = open or nil
 
 	else
-		QueueRefresh()
+		-- Legacy bank and crafting events. None of them names a container.
+		QueueRefresh(true)
 	end
 end)
 
