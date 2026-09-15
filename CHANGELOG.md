@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4 — 2026-09-15
+
+- Only re-reads the bags that changed, which matters most at the bank.
+- Escape in a goal box now cancels the edit instead of saving it.
+- The window no longer updates while it's closed; it catches up when you open it.
+- The resize grip can no longer stick to the cursor, and loot messages in instances
+  can no longer throw an error.
+
 ## 1.0.3
 
 - Updated for patch 12.1. Still loads on 12.0.7.

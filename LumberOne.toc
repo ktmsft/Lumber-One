@@ -2,7 +2,7 @@
 ## Title: Lumber One
 ## Notes: An account-wide tally of every housing lumber across your bags, bank and Warband bank — with goals. Make it sawed.
 ## Author: KTM (abitofmoss)
-## Version: 1.0.3
+## Version: 1.0.4
 ## X-License: All Rights Reserved
 ## IconTexture: Interface\Icons\INV_Misc_Log_01
 ## Category: Professions
